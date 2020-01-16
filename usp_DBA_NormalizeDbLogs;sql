@@ -1,0 +1,97 @@
+USE [MNGDB]
+GO
+
+/****** Object:  StoredProcedure [dbo].[usp_DBA_NormalizeDbLogs]    Script Date: 1/15/2020 10:40:44 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE procedure [dbo].[usp_DBA_NormalizeDbLogs]
+as
+DECLARE
+  @database_name                 varchar(50),
+  @database_id                   int,
+  @file_name                     varchar(200),
+  @file_id                       int,
+  @total_log_size_in_bytes       decimal,
+  @used_log_space_in_bytes       decimal,
+  @used_log_space_in_percent     decimal,
+  @pctusedreq                    decimal,
+  @growth						 int,
+  @file_resized                  decimal,
+  @sizemb                        decimal,
+  @resizemb                      decimal,
+  @maxsizemb					 decimal,
+  @sqlcmd                        varchar(1000);
+
+-- table dblsu DataBaseFileStorqgeUsage must be created for instance
+DECLARE cursor_dblsu cursor
+  for select lsu.database_id
+            ,mf.name
+			,lsu.total_log_size_in_bytes
+			,lsu.used_log_space_in_bytes
+			,lsu.used_log_space_in_percent
+        from dbo.dblsu lsu
+		    ,sys.master_files mf
+	   where lsu.database_id = mf.database_id
+	     and mf.file_id = 2
+	   order by lsu.database_id;
+
+set @pctusedreq = 50;
+
+open cursor_dblsu;
+
+BEGIN TRANSACTION;
+
+-- fetch storage usage for file
+fetch next from cursor_dblsu into
+  @database_id, @file_name, @total_log_size_in_bytes, @used_log_space_in_bytes, @used_log_space_in_percent;
+
+while @@FETCH_STATUS = 0
+begin
+
+  --print @database_id;
+  print db_name(@database_id) + ' : ' + @file_name
+  print 'total_log_size_in_bytes is ' + ltrim(str(@total_log_size_in_bytes)) + ' Bytes ' + str(@total_log_size_in_bytes/(1024*1024)) + ' MB';
+
+  -- Fix
+  if @used_log_space_in_percent > @pctusedreq 
+    begin
+      set @file_resized = @total_log_size_in_bytes * ( @used_log_space_in_percent / @pctusedreq );
+	  set @sizemb    = @total_log_size_in_bytes/(1024*1024);
+      set @resizemb  = @file_resized / ( 1024 * 1024 );
+      set @resizemb  = CEILING( @resizemb / 32 ) * 32;
+      --set @maxsizemb = CEILING( @resizemb / 2048 ) * 2048;
+
+      print db_name(@database_id) + ' : ' + @file_name + ' resized from ' + ltrim(str(@sizemb)) + ' MB to ==> ' + ltrim(str( @resizemb)) + 'MB';
+
+      -- build alter command
+      set @sqlcmd = 'ALTER DATABASE ' + db_name(@database_id) 
+	              + ' MODIFY FILE ( NAME=' + @file_name + ','
+		          + ' SIZE=' + ltrim(str(@resizemb)) + 'MB,' 
+			      + ' MAXSIZE=' + ltrim(str(@resizemb)) + 'MB,'
+			      + ' FILEGROWTH=0MB'
+			      + ');';
+
+      print @sqlcmd;
+      insert into dbo.dbcmd (cmd) values ( @sqlcmd );
+	end;
+  else
+    begin
+      print 'no resize';
+	end;
+
+  fetch next from cursor_dblsu into
+    @database_id, @file_name, @total_log_size_in_bytes, @used_log_space_in_bytes, @used_log_space_in_percent;
+
+end;
+
+commit transaction;
+
+close cursor_dblsu;
+
+deallocate cursor_dblsu;
+GO
+
