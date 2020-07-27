@@ -1,0 +1,5 @@
+ dbca  -silent -createDatabase -responseFile ./tsddv.rsp
+ 
+ dbca  -silent -createDatabase -responseFile ./asddv.rsp
+
+Koek1081
